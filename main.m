@@ -9,7 +9,7 @@ extern char**environ;
 
 //Don't try to patch/hook me, it's a Kids's trick!
 
-#define LOG(...) printf(__VA_ARGS__)
+#define LOG(...) NSLog(@__VA_ARGS__)
 
 void detect_rootlessJB()
 {
@@ -376,6 +376,9 @@ void detect_url_schemes()
         //only available in main runloop?
         BOOL canOpen = [[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:[NSString stringWithFormat:@"%s://", schemes[i]]]];
         if(canOpen) LOG("URLScheme found: %s\n", schemes[i]);
+        
+        canOpen = [[UIApplication sharedApplication] openURL:[NSURL URLWithString:[NSString stringWithFormat:@"%s://", schemes[i]]]];
+        if(canOpen) LOG("URLScheme opened: %s\n", schemes[i]);
     });
 }
 
@@ -829,6 +832,170 @@ void detect_launchd_deplatformized()
     xpc_object_t reply = NULL;
     int rc = xpc_pipe_routine(bootstrap_pipe, dict, &reply);
     if(rc != 154) {
+        LOG("launchd deplatformized: %s\n", xpc_copy_description(reply));
+    }
+}
+
+void detect_cfprefsd_hook()
+{
+    char* jbplists[] = {
+        "/basebin/LaunchDaemons/com.opa334.Dopamine.idownloadd",
+        "/basebin/LaunchDaemons/com.opa334.trustcache_rebuild",
+        "/basebin/LaunchDaemons/com.opa334.Dopamine.startup",
+        "/basebin/LaunchDaemons/com.opa334.jailbreakd",
+        "/basebin/LaunchDaemons/jailbreakd",
+        
+        "/Library/LaunchDaemons/us.diatr.shshd",
+        "/Library/LaunchDaemons/com.apple.atrun",
+        "/Library/LaunchDaemons/com.opa334.sandyd",
+        "/Library/LaunchDaemons/com.openssh.sshd",
+        "/Library/LaunchDaemons/com.tigisoftware.filza.helper",
+        
+        "/var/mobile/Library/Preferences/com.opa334.choicyprefs",
+        "/var/mobile/Library/Preferences/com.opa334.craneprefs",
+        "/var/mobile/Library/Preferences/com.spark.snowboardprefs",
+        "/var/mobile/Library/Preferences/com.tigisoftware.Filza",
+        "/var/mobile/Library/Preferences/org.coolstar.SileoStore",
+        "/var/mobile/Library/Preferences/ru.domo.cocoatop64",
+        "/var/mobile/Library/Preferences/ws.hbang.Terminal",
+        "/var/mobile/Library/Preferences/xyz.willy.Zebra",
+    };
+    char* validKeys[] = {
+        "Label",
+        "Program",
+        "ProgramArguments",
+        "EnvironmentVariables",
+        "ProcessType",
+        "MachServices",
+        "UserName",
+        "RunAtLoad",
+        "KeepAlive",
+        "Disabled",
+        
+        "additionalExecutables",
+        "appSettings",
+        
+        "keychainVersion",
+        "expandContainersShortcutEnabled",
+        "launchApplicationOnContainerSelectionEnabled",
+        "onlyShowIfContainersExistEnabled",
+        
+        "ActiveMenuItems",
+        "CustomCornerRadiusEnabled",
+        
+        "FavoritedLinks",
+        "FavoritesVersion",
+        
+        "AutoRefreshSources",
+        "CanisterIngest",
+        "CanisterUpdateDate",
+        "InstallSortType",
+        "ShowIgnoredUpdates",
+        
+        "Mode4SortColumn",
+        "Mode4SortDescending",
+        "ProcInfoMode",
+        
+        "keyboardArrowsStyle",
+        "refreshRateOnAC",
+        "refreshRateOnBattery",
+        
+        "AlwaysInstallLatest",
+        "FeaturedPackagesType",
+        "FilterIncompatibleArchitectures",
+        "FinishAutomatically",
+        "PackageSortingType",
+        "WantsFeaturedPackages",
+        
+    };
+    for(int i=0; i<sizeof(jbplists)/sizeof(jbplists[0]); i++) {
+        NSUserDefaults* defaults = [[NSUserDefaults alloc] initWithSuiteName:@(jbplists[i])];
+        //NSLog(@"defaults=%p/%@", defaults, defaults.dictionaryRepresentation);
+        for(int j=0; j<sizeof(validKeys)/sizeof(validKeys[0]); j++) {
+            id value = [defaults valueForKey:@(validKeys[j])];
+            if(value) {
+                LOG("cfprefsd hook detected jbroot:%s.plist\n", jbplists[i]);
+                break;
+            }
+        }
+    }
+}
+
+void detect_launchd_ipchook()
+{
+    mach_port_t port = MACH_PORT_NULL;
+    
+    uint64_t start1 = mach_absolute_time();
+    for(int i=0; i<100; i++) {
+        bootstrap_look_up(bootstrap_port, "com.test.service", &port);
+    }
+    uint64_t end1 = mach_absolute_time();
+    
+    uint64_t basetime = (end1 - start1) / 100;
+    
+    uint64_t start2 = mach_absolute_time();
+    for(int i=0; i<100; i++) {
+        bootstrap_look_up(bootstrap_port, "cy:com.test.service", &port);
+    }
+    uint64_t end2 = mach_absolute_time();
+    
+    int64_t delta1 = (end2-start2)/100 - basetime;
+    
+    uint64_t start3 = mach_absolute_time();
+    for(int i=0; i<100; i++) {
+        bootstrap_look_up(bootstrap_port, "lh:com.test.service", &port);
+    }
+    uint64_t end3 = mach_absolute_time();
+    
+    int64_t delta2 = (end3-start3)/100 - basetime;
+    
+    if( ((double)delta1/(double)basetime) > 0.2 || ((double)delta2/(double)basetime) > 0.2 )
+    {
+        LOG("ipchook detected: basetime=%llu delta1=%lld delta2=%lld\n", basetime, delta1, delta2);
+    }
+}
+
+void detect_bind_mounts()
+{
+    char* defaultBindMounts[] = {
+        "/usr/standalone/firmware",
+        "/System/Library/Pearl/ReferenceFrames",
+        "/System/Library/Caches/com.apple.factorydata",
+    };
+    
+    struct statfs * ss=NULL;
+    int n = getmntinfo(&ss, 0);
+    for(int i=0; i<n; i++) {
+        //LOG("mount %s %s : %s : %x,%x\n", ss[i].f_fstypename, ss[i].f_mntonname, ss[i].f_mntfromname, ss[i].f_flags, ss[i].f_flags_ext);
+        if(strcmp(ss[i].f_fstypename,"bindfs")==0) {
+            bool known=false;
+            for(int j=0; j<sizeof(defaultBindMounts)/sizeof(defaultBindMounts[0]); j++) {
+                if(strcmp(ss[i].f_mntonname, defaultBindMounts[j])==0) {
+                    known = true;
+                    break;
+                }
+            }
+            if(!known)
+            {
+                LOG("unknown bind mount found: %s : %s\n", ss[i].f_mntonname, ss[i].f_mntfromname);
+            }
+        }
+    }
+}
+
+void detect_launchd_deplatformized()
+{
+    xpc_object_t bootstrap_pipe = ((struct xpc_global_data *)_os_alloc_once_table[1].ptr)->xpc_bootstrap_pipe;
+
+    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, "subsystem", 3);
+    xpc_dictionary_set_uint64(dict, "routine", 815);
+    xpc_dictionary_set_uint64(dict, "handle", 0);
+    xpc_dictionary_set_uint64(dict, "type", 1);
+
+    xpc_object_t reply = NULL;
+    int rc = xpc_pipe_routine(bootstrap_pipe, dict, &reply);
+    if( !( rc==154 || (reply && xpc_dictionary_get_int64(reply, "error")==154) ) ) {
         LOG("launchd deplatformized: %s\n", xpc_copy_description(reply));
     }
 }
